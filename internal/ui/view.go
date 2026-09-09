@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -64,12 +65,23 @@ func (m Model) renderParticipants(width, height int) string {
 			if item.state == rtc.PeerConnected {
 				style = cardConnectedStyle
 			}
+			if item.voiceMix > 0 {
+				style = cardStyle.BorderForeground(voiceBorderColor(item.voiceMix))
+			}
 			cards = append(cards, style.Width(cardWidth).Render(item.peer.Username+"\n"+mutedStyle.Render(state)))
 		}
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cards...))
 	}
 	grid := lipgloss.JoinVertical(lipgloss.Center, rows...)
 	return baseStyle.Width(width).Height(height).Align(lipgloss.Center, lipgloss.Center).Render(grid)
+}
+
+func voiceBorderColor(mix float64) color.Color {
+	mix = max(0, min(1, mix))
+	red := int(94 + (139-94)*mix + 0.5)
+	green := int(106 + (124-106)*mix + 0.5)
+	blue := int(210 + (246-210)*mix + 0.5)
+	return lipgloss.Color(fmt.Sprintf("#%02X%02X%02X", red, green, blue))
 }
 
 func (m Model) renderSettings(width, height int) string {

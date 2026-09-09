@@ -35,10 +35,17 @@ const (
 	modeTextInput
 )
 
+const (
+	voiceAnimationFrame    = time.Second / 30
+	voiceAnimationDuration = 200 * time.Millisecond
+)
+
 type participant struct {
-	peer  signaling.Peer
-	state rtc.PeerState
-	self  bool
+	peer     signaling.Peer
+	state    rtc.PeerState
+	self     bool
+	speaking bool
+	voiceMix float64
 }
 
 type deviceOption struct {
@@ -68,6 +75,7 @@ type Model struct {
 	settings      bool
 	devices       []deviceOption
 	deviceCursor  int
+	voiceTicking  bool
 }
 
 func NewModel(session *app.Session, configPath string) Model {
@@ -162,8 +170,19 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "access key saved; press Login"
 		}
 	case sessionEventMsg:
+		wasTicking := m.voiceTicking
 		m.applyEvent(msg.event)
-		return m, waitSessionEvent(m.session.Events())
+		wait := waitSessionEvent(m.session.Events())
+		if m.voiceTicking && !wasTicking {
+			return m, tea.Batch(wait, voiceAnimationCmd())
+		}
+		return m, wait
+	case voiceAnimationMsg:
+		m.advanceVoiceAnimation()
+		if m.voiceTicking {
+			return m, voiceAnimationCmd()
+		}
+		return m, nil
 	}
 
 	if textInputActive && m.mode == modeTextInput && m.settings && m.deviceCursor == 0 {
@@ -462,6 +481,24 @@ func (m *Model) applyEvent(event app.Event) {
 			participant.state = event.State
 			m.participants[event.PeerID] = participant
 		}
+	case app.EventVoiceActivity:
+		if event.PeerID != "" {
+			participant, ok := m.participants[event.PeerID]
+			if ok {
+				participant.speaking = event.Active
+				m.participants[event.PeerID] = participant
+				m.voiceTicking = m.voiceTicking || participant.voiceMix != voiceTarget(participant)
+			}
+			break
+		}
+		for peerID, participant := range m.participants {
+			if participant.self {
+				participant.speaking = event.Active
+				m.participants[peerID] = participant
+				m.voiceTicking = m.voiceTicking || participant.voiceMix != voiceTarget(participant)
+				break
+			}
+		}
 	case app.EventDisconnected:
 		m.session.Leave()
 		m.participants = make(map[string]participant)
@@ -470,6 +507,36 @@ func (m *Model) applyEvent(event app.Event) {
 	case app.EventError:
 		m.err = event.Err
 	}
+}
+
+func voiceAnimationCmd() tea.Cmd {
+	return tea.Tick(voiceAnimationFrame, func(time.Time) tea.Msg {
+		return voiceAnimationMsg{}
+	})
+}
+
+func (m *Model) advanceVoiceAnimation() {
+	step := float64(voiceAnimationFrame) / float64(voiceAnimationDuration)
+	m.voiceTicking = false
+	for peerID, participant := range m.participants {
+		target := voiceTarget(participant)
+		if participant.voiceMix < target {
+			participant.voiceMix = min(target, participant.voiceMix+step)
+		} else if participant.voiceMix > target {
+			participant.voiceMix = max(target, participant.voiceMix-step)
+		}
+		m.participants[peerID] = participant
+		if participant.voiceMix != target {
+			m.voiceTicking = true
+		}
+	}
+}
+
+func voiceTarget(participant participant) float64 {
+	if participant.speaking {
+		return 1
+	}
+	return 0
 }
 
 func waitSessionEvent(events <-chan app.Event) tea.Cmd {

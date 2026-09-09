@@ -4,7 +4,12 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/stretchr/testify/require"
+
+	"github.com/webjaba/callpit-client/internal/app"
+	"github.com/webjaba/callpit-client/internal/rtc"
+	"github.com/webjaba/callpit-client/internal/signaling"
 )
 
 func TestSpatialFocus(t *testing.T) {
@@ -291,6 +296,58 @@ func TestModelRenderSettings(t *testing.T) {
 
 			require.NotContains(t, got, token)
 			require.Contains(t, got, "**************")
+		})
+	}
+}
+
+func TestModelVoiceActivity(t *testing.T) {
+	model := mustSetup(t).Model
+	model.participants["self"] = participant{
+		peer:  signaling.Peer{PeerID: "self", Username: "me"},
+		state: rtc.PeerConnected,
+		self:  true,
+	}
+	model.participants["remote"] = participant{
+		peer:  signaling.Peer{PeerID: "remote", Username: "friend"},
+		state: rtc.PeerConnected,
+	}
+
+	model.applyEvent(app.Event{Type: app.EventVoiceActivity, Active: true})
+	model.applyEvent(app.Event{Type: app.EventVoiceActivity, PeerID: "remote", Active: true})
+
+	require.True(t, model.participants["self"].speaking)
+	require.True(t, model.participants["remote"].speaking)
+	require.True(t, model.voiceTicking)
+
+	for model.voiceTicking {
+		model.advanceVoiceAnimation()
+	}
+	require.Equal(t, float64(1), model.participants["self"].voiceMix)
+	require.Equal(t, float64(1), model.participants["remote"].voiceMix)
+
+	model.applyEvent(app.Event{Type: app.EventVoiceActivity, Active: false})
+	for model.voiceTicking {
+		model.advanceVoiceAnimation()
+	}
+	require.Equal(t, float64(0), model.participants["self"].voiceMix)
+}
+
+func TestVoiceBorderColor(t *testing.T) {
+	tests := []struct {
+		name string
+		mix  float64
+		want string
+	}{
+		{name: "base", mix: 0, want: "#5E6AD2"},
+		{name: "middle", mix: 0.5, want: "#7573E4"},
+		{name: "active", mix: 1, want: "#8B7CF6"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotR, gotG, gotB, _ := voiceBorderColor(tt.mix).RGBA()
+			wantR, wantG, wantB, _ := lipgloss.Color(tt.want).RGBA()
+			require.Equal(t, []uint32{wantR, wantG, wantB}, []uint32{gotR, gotG, gotB})
 		})
 	}
 }

@@ -20,7 +20,61 @@ const (
 	sampleRate       = 48000
 	opusFrameSamples = 960
 	remoteBufferSize = sampleRate / 2
+	voiceThreshold   = 700
+	voiceHangover    = sampleRate * 300 / 1000
 )
+
+type activityDetector struct {
+	active        bool
+	silentSamples int
+	onChange      func(bool)
+}
+
+func (d *activityDetector) update(samples []int16) {
+	var energy int64
+	for _, sample := range samples {
+		value := int64(sample)
+		energy += value * value
+	}
+	d.updateEnergy(energy, len(samples))
+}
+
+func (d *activityDetector) updateBytes(data []byte) {
+	var energy int64
+	for i := 0; i+1 < len(data); i += 2 {
+		value := int64(int16(binary.LittleEndian.Uint16(data[i:])))
+		energy += value * value
+	}
+	d.updateEnergy(energy, len(data)/2)
+}
+
+func (d *activityDetector) updateEnergy(energy int64, samples int) {
+	speaking := samples > 0 && energy >= int64(voiceThreshold*voiceThreshold*samples)
+	if speaking {
+		d.silentSamples = 0
+		if !d.active {
+			d.active = true
+			d.onChange(true)
+		}
+		return
+	}
+	if !d.active {
+		return
+	}
+	d.silentSamples += samples
+	if d.silentSamples >= voiceHangover {
+		d.active = false
+		d.silentSamples = 0
+		d.onChange(false)
+	}
+}
+
+func (d *activityDetector) stop() {
+	if d.active {
+		d.active = false
+		d.onChange(false)
+	}
+}
 
 type Engine struct {
 	ctx        *malgo.AllocatedContext
@@ -36,22 +90,30 @@ type Engine struct {
 	remotes    map[string]*sampleBuffer
 	remoteCtx  map[string]context.CancelFunc
 	scratch    []int32
+	activity   func(string, bool)
+	localVoice activityDetector
 }
 
-func New(track *webrtc.TrackLocalStaticSample) (*Engine, error) {
+func New(track *webrtc.TrackLocalStaticSample, onActivity func(string, bool)) (*Engine, error) {
 	ctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("initialize audio: %w", err)
 	}
 
-	return &Engine{
+	if onActivity == nil {
+		onActivity = func(string, bool) {}
+	}
+	engine := &Engine{
 		ctx:        ctx,
 		track:      track,
 		input:      newByteBuffer(opusFrameSamples * 2 * 16),
 		inputReady: make(chan struct{}, 1),
 		remotes:    make(map[string]*sampleBuffer),
 		remoteCtx:  make(map[string]context.CancelFunc),
-	}, nil
+		activity:   onActivity,
+	}
+	engine.localVoice.onChange = func(active bool) { onActivity("", active) }
+	return engine, nil
 }
 
 func (e *Engine) Devices() ([]Device, []Device, error) {
@@ -171,7 +233,7 @@ func (e *Engine) AddRemote(peerID string, track *webrtc.TrackRemote) {
 	e.remoteCtx[peerID] = cancel
 	e.mu.Unlock()
 
-	go e.decode(ctx, track, buffer)
+	go e.decode(ctx, peerID, track, buffer)
 }
 
 func (e *Engine) RemoveRemote(peerID string) {
@@ -272,6 +334,7 @@ func (e *Engine) encode(ctx context.Context) {
 				if e.muted.Load() {
 					clear(pcm)
 				}
+				e.localVoice.updateBytes(pcm)
 				n, err := encoder.Encode(pcm, packet)
 				if err == nil {
 					_ = e.track.WriteSample(media.Sample{Data: append([]byte(nil), packet[:n]...), Duration: 20 * time.Millisecond})
@@ -281,12 +344,14 @@ func (e *Engine) encode(ctx context.Context) {
 	}
 }
 
-func (e *Engine) decode(ctx context.Context, track *webrtc.TrackRemote, buffer *sampleBuffer) {
+func (e *Engine) decode(ctx context.Context, peerID string, track *webrtc.TrackRemote, buffer *sampleBuffer) {
 	decoder, err := opus.NewDecoderWithOutput(sampleRate, 1)
 	if err != nil {
 		return
 	}
 	pcm := make([]int16, sampleRate*120/1000)
+	detector := activityDetector{onChange: func(active bool) { e.activity(peerID, active) }}
+	defer detector.stop()
 
 	for {
 		packet, _, err := track.ReadRTP()
@@ -300,6 +365,7 @@ func (e *Engine) decode(ctx context.Context, track *webrtc.TrackRemote, buffer *
 		if err != nil {
 			continue
 		}
+		detector.update(pcm[:n])
 		buffer.Write(pcm[:n])
 	}
 }

@@ -34,3 +34,5 @@ type setAccessTokenResultMsg struct {
 type sessionEventMsg struct {
 	event app.Event
 }
+
+type voiceAnimationMsg struct{}

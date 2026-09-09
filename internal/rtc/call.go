@@ -27,6 +27,11 @@ type StateEvent struct {
 	State  PeerState
 }
 
+type ActivityEvent struct {
+	PeerID string
+	Active bool
+}
+
 type peerConnection struct {
 	connection        *webrtc.PeerConnection
 	remoteDescription bool
@@ -45,7 +50,13 @@ type Call struct {
 	closeOnce sync.Once
 }
 
-func New(ctx context.Context, signal *signaling.Client, rtcConfig api.RTCConfig, onState func(StateEvent)) (*Call, error) {
+func New(
+	ctx context.Context,
+	signal *signaling.Client,
+	rtcConfig api.RTCConfig,
+	onState func(StateEvent),
+	onActivity func(ActivityEvent),
+) (*Call, error) {
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
 		"microphone",
@@ -54,7 +65,12 @@ func New(ctx context.Context, signal *signaling.Client, rtcConfig api.RTCConfig,
 	if err != nil {
 		return nil, fmt.Errorf("create local audio track: %w", err)
 	}
-	engine, err := audio.New(track)
+	if onActivity == nil {
+		onActivity = func(ActivityEvent) {}
+	}
+	engine, err := audio.New(track, func(peerID string, active bool) {
+		onActivity(ActivityEvent{PeerID: peerID, Active: active})
+	})
 	if err != nil {
 		return nil, err
 	}

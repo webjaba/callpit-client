@@ -19,12 +19,13 @@ const serverURL = "http://localhost:8080"
 type EventType string
 
 const (
-	EventSnapshot     EventType = "snapshot"
-	EventPeerJoined   EventType = "peer_joined"
-	EventPeerLeft     EventType = "peer_left"
-	EventPeerState    EventType = "peer_state"
-	EventDisconnected EventType = "disconnected"
-	EventError        EventType = "error"
+	EventSnapshot      EventType = "snapshot"
+	EventPeerJoined    EventType = "peer_joined"
+	EventPeerLeft      EventType = "peer_left"
+	EventPeerState     EventType = "peer_state"
+	EventVoiceActivity EventType = "voice_activity"
+	EventDisconnected  EventType = "disconnected"
+	EventError         EventType = "error"
 )
 
 type Event struct {
@@ -35,6 +36,7 @@ type Event struct {
 	Peer       *signaling.Peer
 	PeerID     string
 	State      rtc.PeerState
+	Active     bool
 	Err        error
 }
 
@@ -114,6 +116,8 @@ func (s *Session) Join(ctx context.Context, room string) error {
 	}
 	call, err := rtc.New(callCtx, signal, rtcConfig, func(event rtc.StateEvent) {
 		s.emit(generation, Event{Type: EventPeerState, PeerID: event.PeerID, State: event.State})
+	}, func(event rtc.ActivityEvent) {
+		s.emit(generation, Event{Type: EventVoiceActivity, PeerID: event.PeerID, Active: event.Active})
 	})
 	if err != nil {
 		signal.Close()
